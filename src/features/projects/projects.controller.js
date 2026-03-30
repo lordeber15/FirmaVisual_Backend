@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Project, ProjectMember, Document, DocumentSigner, User, AuditLog } = require('../../shared/models');
+const { Project, ProjectMember, Document, DocumentSigner, User, Role, AuditLog } = require('../../shared/models');
 
 exports.createProject = async (req, res) => {
   try {
@@ -184,19 +184,51 @@ exports.assignMembers = async (req, res) => {
       return res.status(400).json({ message: 'Debe enviar al menos un userId' });
     }
 
+    const uniqueIds = [...new Set(userIds)];
+
     // Eliminar miembros anteriores (excepto el creador)
     await ProjectMember.destroy({
       where: { projectId: id, userId: { [Op.ne]: project.createdBy } }
     });
 
+    // Obtener roles de los usuarios para identificar Firmantes
+    const usersWithRoles = await User.findAll({
+      where: { id: { [Op.in]: uniqueIds } },
+      include: [{ model: Role, as: 'Role' }]
+    });
+
     // Crear nuevas asignaciones (evitar duplicar al creador)
-    const uniqueIds = [...new Set(userIds)];
     const members = await ProjectMember.bulkCreate(
       uniqueIds
         .filter(uid => uid !== project.createdBy)
         .map(userId => ({ projectId: id, userId, role: 'VIEWER' })),
       { ignoreDuplicates: true }
     );
+
+    // Auto-asignación de firmantes a documentos existentes
+    const firmanteIds = usersWithRoles
+      .filter(u => u.Role?.name === 'Firmante')
+      .map(u => u.id);
+
+    if (firmanteIds.length > 0) {
+      const projectDocuments = await Document.findAll({
+        where: { projectId: id, status: { [Op.ne]: 'COMPLETED' } }
+      });
+
+      if (projectDocuments.length > 0) {
+        const signersToCreate = [];
+        for (const doc of projectDocuments) {
+          for (const fId of firmanteIds) {
+            signersToCreate.push({
+              documentId: doc.id,
+              userId: fId,
+              status: 'PENDING'
+            });
+          }
+        }
+        await DocumentSigner.bulkCreate(signersToCreate, { ignoreDuplicates: true });
+      }
+    }
 
     // Asegurar que el creador siempre esté
     await ProjectMember.findOrCreate({
@@ -207,11 +239,11 @@ exports.assignMembers = async (req, res) => {
     await AuditLog.create({
       userId: req.user.id,
       action: 'ASSIGN_PROJECT_MEMBERS',
-      details: `${uniqueIds.length} miembros asignados al proyecto ${id}`,
+      details: `${uniqueIds.length} miembros asignados y firmantes sincronizados para el proyecto ${id}`,
       ip: req.ip
     });
 
-    res.json({ message: 'Miembros asignados correctamente', count: members.length + 1 });
+    res.json({ message: 'Miembros asignados y firmas sincronizadas correctamente', count: members.length + 1 });
   } catch (error) {
     console.error('ASSIGN_MEMBERS ERROR:', error);
     res.status(500).json({ message: 'Error al asignar miembros', error: error.message });

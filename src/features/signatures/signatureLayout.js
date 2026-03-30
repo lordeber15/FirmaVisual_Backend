@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS = {
   fields: { name: true, position: true, colegiatura: true, details: true, hash: true },
   borderColor: '#3b82f6',
   borderWidth: 2,
+  rotation: 0,
   opacity: 0.95,
 };
 

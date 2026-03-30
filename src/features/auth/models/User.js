@@ -52,6 +52,7 @@ const User = sequelize.define('User', {
       color: '#0f172a',
       borderColor: '#3b82f6',
       borderWidth: 2,
+      rotation: 0,
       opacity: 0.95
     }
   }

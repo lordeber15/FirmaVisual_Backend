@@ -1,5 +1,6 @@
-const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
+const { PDFDocument, rgb, StandardFonts, degrees } = require('pdf-lib');
 const fs = require('fs');
+const fsP = fs.promises;
 const { STAMP_TEXTS, TEXT_COLORS_RGB, LAYOUT, PX_TO_PT, mergeSettings } = require('./signatureLayout');
 
 /**
@@ -47,7 +48,7 @@ function hexToRgb(hex) {
  * @param {object} coords - { x, y, width, height }
  */
 exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coords) => {
-  const existingPdfBytes = fs.readFileSync(inputPath);
+  const existingPdfBytes = await fsP.readFile(inputPath);
   const pdfDoc = await PDFDocument.load(existingPdfBytes);
   const pages = pdfDoc.getPages();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -60,7 +61,7 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
   let signatureImage;
   const imgPath = settings.signatureImagePath || signatureData.signatureImagePath;
   if (imgPath && fs.existsSync(imgPath)) {
-    const imageBytes = fs.readFileSync(imgPath);
+    const imageBytes = await fsP.readFile(imgPath);
     const ext = imgPath.toLowerCase();
     if (ext.endsWith('.jpg') || ext.endsWith('.jpeg')) {
       signatureImage = await pdfDoc.embedJpg(imageBytes);
@@ -69,18 +70,7 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     }
   }
 
-  // Cargar imagen de acento (franja)
-  let accentImage;
-  const accentPath = settings.accentImagePath;
-  if (accentPath && fs.existsSync(accentPath)) {
-    const imageBytes = fs.readFileSync(accentPath);
-    const ext = accentPath.toLowerCase();
-    if (ext.endsWith('.jpg') || ext.endsWith('.jpeg')) {
-      accentImage = await pdfDoc.embedJpg(imageBytes);
-    } else {
-      accentImage = await pdfDoc.embedPng(imageBytes);
-    }
-  }
+  // --- IMÁGENES: Carga de recursos ---
   const { fields } = settings;
 
   // --- Convertir dimensiones de CSS px a PDF pt ---
@@ -123,58 +113,84 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     const page = pages[pageIndex];
     if (!page) continue;
 
-    // --- BORDE: Estilo accent izquierdo / Imagen de acento ---
-    if (accentImage) {
-      page.drawImage(accentImage, {
-        x: coords.x,
-        y: coords.y,
-        width: accentWidth,
-        height: boxHeight,
-        opacity: opacity,
-      });
-    } else {
-      page.drawRectangle({
-        x: coords.x,
-        y: coords.y,
-        width: accentWidth,
-        height: boxHeight,
-        color: borderColor,
-        opacity: opacity,
-      });
+    const cropBox = page.getCropBox();
+    const { x: cx, y: cy, width: cw, height: ch } = cropBox;
+    const pageRotation = page.getRotation().angle;
+
+    // Determinamos las dimensiones visuales (lo que ve el usuario)
+    const is90or270 = (pageRotation === 90 || pageRotation === 270);
+    const visW = is90or270 ? ch : cw;
+    const visH = is90or270 ? cw : ch;
+
+    // Las coordenadas vienen de PDF.js convertToPdfPoint, que ya deshace la rotación del viewport.
+    // El problema reside en que pdf-lib dibuja relativo al MediaBox (0,0).
+    // Para asegurar posición definitiva, sumamos el origen del CropBox.
+    let stampX = coords.x + cx;
+    let stampY = coords.y + cy;
+
+    // La rotación del sello debe compensar la rotación de la página para que el usuario
+    // lo vea horizontal (u orientado según su diseño) en el visor.
+    const userRotation = settings.rotation || 0;
+    const totalRotation = userRotation - pageRotation; 
+
+    // Al rotar el sello con pdf-lib (que lo hace CCW alrededor del punto x,y),
+    // debemos ajustar stampX y stampY si la página tiene rotación intrínseca,
+    // de lo contrario el punto de anclaje visual (bottom-left) se desplazaría.
+    // PDF Rotations (pageRotation) son usualmente Clockwise en pdf-lib.
+    if (pageRotation === 90) {
+      stampY += boxWidth;
+    } else if (pageRotation === 180) {
+      stampX += boxWidth;
+      stampY += boxHeight;
+    } else if (pageRotation === 270) {
+      stampX += boxHeight;
     }
 
-    // Bordes sutiles
-    const subtleOpacity = opacity * 0.25;
-    // Superior
-    page.drawLine({
-      start: { x: coords.x, y: coords.y + boxHeight },
-      end: { x: coords.x + boxWidth, y: coords.y + boxHeight },
-      thickness: 0.5,
+    const rad = (totalRotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    // Helper para transformar coordenadas locales (rx, ry) a coordenadas de página (px, py)
+    const transform = (rx, ry) => {
+      const rxRot = rx * cos - ry * sin;
+      const ryRot = rx * sin + ry * cos;
+      return { px: stampX + rxRot, py: stampY + ryRot };
+    };
+
+    // --- BORDE: Estilo accent izquierdo ---
+    const accentPos = transform(0, 0);
+    page.drawRectangle({
+      x: accentPos.px,
+      y: accentPos.py,
+      width: accentWidth,
+      height: boxHeight,
       color: borderColor,
-      opacity: subtleOpacity,
-    });
-    // Derecho
-    page.drawLine({
-      start: { x: coords.x + boxWidth, y: coords.y },
-      end: { x: coords.x + boxWidth, y: coords.y + boxHeight },
-      thickness: 0.5,
-      color: borderColor,
-      opacity: subtleOpacity,
-    });
-    // Inferior
-    page.drawLine({
-      start: { x: coords.x, y: coords.y },
-      end: { x: coords.x + boxWidth, y: coords.y },
-      thickness: 0.5,
-      color: borderColor,
-      opacity: subtleOpacity,
+      opacity: opacity,
+      rotate: degrees(totalRotation),
     });
 
-    // Fondo transparente (sin rectángulo blanco)
+    // Bordes sutiles
+    const subtleOpacity = opacity * 0.35;
+    // Función auxiliar para dibujar líneas rotadas
+    const drawRotatedLine = (startR, endR) => {
+      const s = transform(startR.x, startR.y);
+      const e = transform(endR.x, endR.y);
+      page.drawLine({
+        start: { x: s.px, y: s.py },
+        end: { x: e.px, y: e.py },
+        thickness: 0.75,
+        color: borderColor,
+        opacity: subtleOpacity,
+      });
+    };
+
+    drawRotatedLine({ x: 0, y: boxHeight }, { x: boxWidth, y: boxHeight }); // Superior
+    drawRotatedLine({ x: boxWidth, y: 0 }, { x: boxWidth, y: boxHeight }); // Derecho
+    drawRotatedLine({ x: 0, y: 0 }, { x: boxWidth, y: 0 }); // Inferior
 
     // --- Cálculo de posición del texto ---
     const hasImage = !!signatureImage;
-    const textX = coords.x + accentWidth + (hasImage ? (boxWidth * 0.35) + (8 * S) : paddingX);
+    const relTextX = accentWidth + (hasImage ? (boxWidth * 0.35) + (8 * S) : paddingX);
     const textMaxWidth = hasImage
       ? boxWidth - accentWidth - (boxWidth * 0.35) - (8 * S) - paddingX
       : boxWidth - accentWidth - (paddingX * 2);
@@ -191,110 +207,115 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     const hasHash = fields.hash !== false && signatureData.hash;
     const footerLines = hasHash ? 2 : 1;
     const footerZoneHeight = (fs_meta * footerLines) + (lineSpacing * footerLines) + (3 * S);
-    const footerBaseY = coords.y + paddingBottom;
-    const footerMinY = footerBaseY + footerZoneHeight;
+    const relFooterBaseY = paddingBottom;
+    const footerMinY = relFooterBaseY + footerZoneHeight;
 
-    let currentY = coords.y + boxHeight - paddingTop;
+    let currentRelY = boxHeight - paddingTop;
 
     // --- Imagen de firma (lado izquierdo del sello) ---
     if (signatureImage) {
       const imgWidth = boxWidth * 0.30;
       const imgHeight = boxHeight * 0.7;
+      const imgPos = transform(accentWidth + (4 * S), (boxHeight - imgHeight) / 2);
       page.drawImage(signatureImage, {
-        x: coords.x + accentWidth + (4 * S),
-        y: coords.y + (boxHeight - imgHeight) / 2,
+        x: imgPos.px,
+        y: imgPos.py,
         width: imgWidth,
         height: imgHeight,
         opacity: opacity,
+        rotate: degrees(totalRotation),
       });
     }
 
     // --- Campos de texto con guardia anti-superposición ---
-    // Solo renderizar si hay espacio antes de la zona del footer
-
     // 1. Nombre
-    if (fields.name && (currentY - fs_name) > footerMinY) {
+    if (fields.name && (currentRelY - fs_name) > footerMinY) {
+      const pos = transform(relTextX, currentRelY);
       page.drawText(truncateText(signatureData.name || 'N/A', fs_name), {
-        x: textX,
-        y: currentY,
+        x: pos.px,
+        y: pos.py,
         size: fs_name,
         font: fontBold,
         color: rgb(...TEXT_COLORS_RGB.name),
+        rotate: degrees(totalRotation),
       });
-      currentY -= (fs_name + lineSpacing);
+      currentRelY -= (fs_name + lineSpacing);
     }
 
     // 2. Cargo
-    if (fields.position && (currentY - fs_position) > footerMinY) {
+    if (fields.position && (currentRelY - fs_position) > footerMinY) {
+      const pos = transform(relTextX, currentRelY);
       page.drawText(truncateText(signatureData.position || 'N/A', fs_position), {
-        x: textX,
-        y: currentY,
+        x: pos.px,
+        y: pos.py,
         size: fs_position,
         font: fontBold,
         color: rgb(...TEXT_COLORS_RGB.position),
+        rotate: degrees(totalRotation),
       });
-      currentY -= (fs_position + lineSpacing);
+      currentRelY -= (fs_position + lineSpacing);
     }
 
     // 3. Colegiatura
-    if (fields.colegiatura && signatureData.colegiatura && (currentY - fs_colegiatura) > footerMinY) {
+    if (fields.colegiatura && signatureData.colegiatura && (currentRelY - fs_colegiatura) > footerMinY) {
+      const pos = transform(relTextX, currentRelY);
       page.drawText(truncateText(signatureData.colegiatura, fs_colegiatura), {
-        x: textX,
-        y: currentY,
+        x: pos.px,
+        y: pos.py,
         size: fs_colegiatura,
         font: font,
         color: rgb(...TEXT_COLORS_RGB.colegiatura),
+        rotate: degrees(totalRotation),
       });
-      currentY -= (fs_colegiatura + lineSpacing);
+      currentRelY -= (fs_colegiatura + lineSpacing);
     }
 
     // 4. Detalles
-    if (fields.details && signatureData.details && (currentY - fs_details) > footerMinY) {
+    if (fields.details && signatureData.details && (currentRelY - fs_details) > footerMinY) {
+      const pos = transform(relTextX, currentRelY);
       page.drawText(truncateText(signatureData.details, fs_details), {
-        x: textX,
-        y: currentY,
+        x: pos.px,
+        y: pos.py,
         size: fs_details,
         font: font,
         color: rgb(...TEXT_COLORS_RGB.details),
+        rotate: degrees(totalRotation),
       });
     }
 
     // --- Footer: 2 líneas apiladas (fecha arriba, hash abajo) ---
-    // Línea divisora
-    const dividerY = footerBaseY + (fs_meta * footerLines) + (lineSpacing * footerLines);
-    page.drawLine({
-      start: { x: textX, y: dividerY },
-      end: { x: coords.x + boxWidth - paddingX, y: dividerY },
-      thickness: 0.3,
-      color: rgb(0.85, 0.85, 0.85),
-      opacity: 0.8,
-    });
+    const relDividerY = relFooterBaseY + (fs_meta * footerLines) + (lineSpacing * footerLines);
+    drawRotatedLine({ x: relTextX, y: relDividerY }, { x: boxWidth - paddingX, y: relDividerY });
 
     // Línea 1: Fecha
     const dateText = truncateText(`${STAMP_TEXTS.FOOTER_DATE_PREFIX} ${signatureData.dateTime}`, fs_meta);
-    const footerLine1Y = footerBaseY + (hasHash ? fs_meta + lineSpacing : 0);
+    const relFooterLine1Y = relFooterBaseY + (hasHash ? fs_meta + lineSpacing : 0);
+    const f1Pos = transform(relTextX, relFooterLine1Y);
     page.drawText(dateText, {
-      x: textX,
-      y: footerLine1Y,
+      x: f1Pos.px,
+      y: f1Pos.py,
       size: fs_meta,
       font: font,
       color: rgb(...TEXT_COLORS_RGB.meta),
+       rotate: degrees(totalRotation),
     });
 
     // Línea 2: Hash (debajo de la fecha)
     if (hasHash) {
       const hashText = truncateText(`${STAMP_TEXTS.FOOTER_HASH_PREFIX} ${signatureData.hash}`, fs_meta - 1);
+      const f2Pos = transform(relTextX, relFooterBaseY);
       page.drawText(hashText, {
-        x: textX,
-        y: footerBaseY,
+        x: f2Pos.px,
+        y: f2Pos.py,
         size: fs_meta - 1,
         font: font,
         color: rgb(...TEXT_COLORS_RGB.meta),
+        rotate: degrees(totalRotation),
       });
     }
   }
 
   const pdfBytes = await pdfDoc.save();
-  fs.writeFileSync(outputPath, pdfBytes);
+  await fsP.writeFile(outputPath, pdfBytes);
   return outputPath;
 };

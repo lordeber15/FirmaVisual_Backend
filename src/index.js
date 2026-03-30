@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const { sequelize } = require('./shared/models');
@@ -9,6 +10,9 @@ const seed = require('../seed');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ─── Performance Middlewares ───
+app.use(compression());
 
 // ─── Security Middlewares ───
 app.use(helmet({

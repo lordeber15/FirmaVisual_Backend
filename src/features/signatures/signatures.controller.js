@@ -92,7 +92,8 @@ exports.signDocument = async (req, res) => {
       ip: req.ip
     });
 
-    res.json({ message: 'Documento firmado correctamente', signature });
+    const signedFilenameForClient = signedFilename;
+    res.json({ message: 'Documento firmado correctamente', signature, signedFilename: signedFilenameForClient });
   } catch (error) {
     console.error('SIGN_DOCUMENT ERROR:', error);
     res.status(500).json({ message: 'Error al firmar documento', error: error.message });

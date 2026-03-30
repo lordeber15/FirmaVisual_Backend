@@ -7,18 +7,45 @@ exports.uploadDocument = async (req, res) => {
       return res.status(400).json({ message: 'No se subió ningún archivo' });
     }
 
+    if (!req.body.projectId) {
+      return res.status(400).json({ message: 'El documento debe estar asociado a un proyecto' });
+    }
+
     const document = await Document.create({
       filename: req.file.originalname,
       originalPath: req.file.path,
       status: 'PENDING',
-      projectId: req.body.projectId || null,
+      projectId: req.body.projectId,
       createdBy: req.user.id
     });
+
+    // Auto-asignar firmantes del proyecto
+    const projectMembers = await ProjectMember.findAll({
+      where: { projectId: req.body.projectId },
+      include: [{ 
+        model: User, 
+        as: 'user', 
+        include: [{ model: Role, as: 'Role' }] 
+      }]
+    });
+
+    const firmantes = projectMembers.filter(m => m.user?.Role?.name === 'Firmante');
+    
+    if (firmantes.length > 0) {
+      await DocumentSigner.bulkCreate(
+        firmantes.map(f => ({
+          documentId: document.id,
+          userId: f.userId,
+          status: 'PENDING'
+        })),
+        { ignoreDuplicates: true }
+      );
+    }
 
     await AuditLog.create({
       userId: req.user.id,
       action: 'UPLOAD_DOCUMENT',
-      details: `Documento ${document.filename} subido correctamente`,
+      details: `Documento ${document.filename} subido al proyecto ${req.body.projectId}`,
       ip: req.ip
     });
 
@@ -157,16 +184,25 @@ exports.getDocuments = async (req, res) => {
 
     // Filtros de seguridad (RBAC)
     if (!isAdmin) {
+      // 1. Proyectos donde soy miembro (para Asistentes)
       const memberships = await ProjectMember.findAll({
         where: { userId: req.user.id },
         attributes: ['projectId']
       });
       const memberProjectIds = memberships.map(m => m.projectId);
 
+      // 2. Documentos donde soy firmante (para Firmantes)
+      const asSigner = await DocumentSigner.findAll({
+        where: { userId: req.user.id },
+        attributes: ['documentId']
+      });
+      const signedDocIds = asSigner.map(s => s.documentId);
+
       const securityFilter = {
         [Op.or]: [
           { createdBy: req.user.id },
-          { projectId: { [Op.in]: memberProjectIds } }
+          { id: { [Op.in]: signedDocIds } },
+          { projectId: { [Op.in]: memberProjectIds } } // Permite a Asistentes ver todo el proyecto
         ]
       };
 
