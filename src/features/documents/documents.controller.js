@@ -231,7 +231,8 @@ exports.getDocuments = async (req, res) => {
       ],
       offset,
       limit,
-      order: [['createdAt', 'DESC']]
+      order: [['createdAt', 'DESC']],
+      distinct: true
     });
 
     res.json({

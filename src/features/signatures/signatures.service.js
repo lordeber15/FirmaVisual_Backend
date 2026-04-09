@@ -130,21 +130,13 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
 
     // La rotación del sello debe compensar la rotación de la página para que el usuario
     // lo vea horizontal (u orientado según su diseño) en el visor.
+    // Usamos (pageRotation - userRotation) porque userRotation es CW en el frontend
+    // y pdf-lib usa CCW. pageRotation en pdf-lib también es CW.
     const userRotation = settings.rotation || 0;
-    const totalRotation = userRotation - pageRotation; 
+    const totalRotation = (pageRotation - userRotation) % 360; 
 
     // Al rotar el sello con pdf-lib (que lo hace CCW alrededor del punto x,y),
-    // debemos ajustar stampX y stampY si la página tiene rotación intrínseca,
-    // de lo contrario el punto de anclaje visual (bottom-left) se desplazaría.
-    // PDF Rotations (pageRotation) son usualmente Clockwise en pdf-lib.
-    if (pageRotation === 90) {
-      stampY += boxWidth;
-    } else if (pageRotation === 180) {
-      stampX += boxWidth;
-      stampY += boxHeight;
-    } else if (pageRotation === 270) {
-      stampX += boxHeight;
-    }
+    // El punto (stampX, stampY) es el pivote (corner inferior izquierdo visual).
 
     const rad = (totalRotation * Math.PI) / 180;
     const cos = Math.cos(rad);
@@ -158,16 +150,18 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     };
 
     // --- BORDE: Estilo accent izquierdo ---
-    const accentPos = transform(0, 0);
-    page.drawRectangle({
-      x: accentPos.px,
-      y: accentPos.py,
-      width: accentWidth,
-      height: boxHeight,
-      color: borderColor,
-      opacity: opacity,
-      rotate: degrees(totalRotation),
-    });
+    if (fields.accentBorder !== false) {
+      const accentPos = transform(0, 0);
+      page.drawRectangle({
+        x: accentPos.px,
+        y: accentPos.py,
+        width: accentWidth,
+        height: boxHeight,
+        color: borderColor,
+        opacity: opacity,
+        rotate: degrees(totalRotation),
+      });
+    }
 
     // Bordes sutiles
     const subtleOpacity = opacity * 0.35;
@@ -187,13 +181,15 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     drawRotatedLine({ x: 0, y: boxHeight }, { x: boxWidth, y: boxHeight }); // Superior
     drawRotatedLine({ x: boxWidth, y: 0 }, { x: boxWidth, y: boxHeight }); // Derecho
     drawRotatedLine({ x: 0, y: 0 }, { x: boxWidth, y: 0 }); // Inferior
+    drawRotatedLine({ x: 0, y: 0 }, { x: 0, y: boxHeight }); // Izquierdo
 
     // --- Cálculo de posición del texto ---
     const hasImage = !!signatureImage;
-    const relTextX = accentWidth + (hasImage ? (boxWidth * 0.35) + (8 * S) : paddingX);
+    const effectiveAccentWidth = fields.accentBorder !== false ? accentWidth : 0;
+    const relTextX = effectiveAccentWidth + (hasImage ? (boxWidth * 0.35) + (8 * S) : paddingX);
     const textMaxWidth = hasImage
-      ? boxWidth - accentWidth - (boxWidth * 0.35) - (8 * S) - paddingX
-      : boxWidth - accentWidth - (paddingX * 2);
+      ? boxWidth - effectiveAccentWidth - (boxWidth * 0.35) - (8 * S) - paddingX
+      : boxWidth - effectiveAccentWidth - (paddingX * 2);
 
     // Helper para truncar texto
     const truncateText = (text, size) => {
