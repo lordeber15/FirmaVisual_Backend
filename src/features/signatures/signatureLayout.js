@@ -11,7 +11,7 @@ const STAMP_TEXTS = {
 
 const DEFAULT_SETTINGS = {
   width: 220,
-  height: 100,
+  height: 120,
   fontSizes: { name: 10, position: 8, colegiatura: 8, details: 7, meta: 6 },
   fields: { name: true, position: true, colegiatura: true, details: true, hash: true },
   borderColor: '#3b82f6',

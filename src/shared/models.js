@@ -1,6 +1,7 @@
 const sequelize = require('./database');
 const Role = require('../features/auth/models/Role');
 const User = require('../features/auth/models/User');
+const UserRole = require('../features/auth/models/UserRole');
 const Project = require('../features/projects/models/Project');
 const Document = require('../features/documents/models/Document');
 const DocumentSigner = require('../features/documents/models/DocumentSigner');
@@ -8,9 +9,13 @@ const Signature = require('../features/signatures/models/Signature');
 const ProjectMember = require('../features/projects/models/ProjectMember');
 const AuditLog = require('../features/audit/models/AuditLog');
 
-// --- Role / User ---
-Role.hasMany(User, { foreignKey: 'roleId' });
-User.belongsTo(Role, { foreignKey: 'roleId' });
+// --- Role / User (Many-to-Many) ---
+User.belongsToMany(Role, { through: UserRole, foreignKey: 'userId', unique: false });
+Role.belongsToMany(User, { through: UserRole, foreignKey: 'roleId', unique: false });
+
+User.hasMany(UserRole, { foreignKey: 'userId', as: 'userRoles' });
+UserRole.belongsTo(User, { foreignKey: 'userId' });
+UserRole.belongsTo(Role, { foreignKey: 'roleId' });
 
 // --- Project ---
 User.hasMany(Project, { foreignKey: 'createdBy' });
@@ -29,6 +34,7 @@ Signature.belongsTo(Document, { foreignKey: 'documentId' });
 
 User.hasMany(Signature, { foreignKey: 'userId' });
 Signature.belongsTo(User, { foreignKey: 'userId' });
+Signature.belongsTo(Role, { foreignKey: 'roleId' });
 
 // --- DocumentSigner ---
 Document.hasMany(DocumentSigner, { foreignKey: 'documentId', as: 'signers' });
@@ -36,6 +42,8 @@ DocumentSigner.belongsTo(Document, { foreignKey: 'documentId' });
 
 User.hasMany(DocumentSigner, { foreignKey: 'userId' });
 DocumentSigner.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+DocumentSigner.belongsTo(Role, { foreignKey: 'roleId', as: 'role' });
 
 // --- ProjectMember ---
 Project.hasMany(ProjectMember, { foreignKey: 'projectId', as: 'members' });
@@ -52,6 +60,7 @@ module.exports = {
   sequelize,
   Role,
   User,
+  UserRole,
   Project,
   ProjectMember,
   Document,

@@ -25,10 +25,6 @@ const User = sequelize.define('User', {
     type: DataTypes.STRING,
     allowNull: false
   },
-  roleId: {
-    type: DataTypes.INTEGER,
-    allowNull: false
-  },
   signatureSettings: {
     type: DataTypes.JSON,
     allowNull: true,

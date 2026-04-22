@@ -49,8 +49,9 @@ const documentIdRules = [
 
 const assignSignersRules = [
   param('id').isUUID().withMessage('ID de documento inválido'),
-  body('userIds').isArray({ min: 1 }).withMessage('Debe enviar al menos un userId'),
-  body('userIds.*').isUUID().withMessage('Cada userId debe ser un UUID válido'),
+  body('userIds').isArray({ min: 1 }).withMessage('Debe enviar al menos un componente de firma'),
+  body('userIds.*.userId').isUUID().withMessage('Cada userId debe ser un UUID válido'),
+  body('userIds.*.roleId').optional({ checkFalsy: true }).isInt().withMessage('Cada componente debe tener un roleId válido (entero)'),
 ];
 
 // ─── Projects ───

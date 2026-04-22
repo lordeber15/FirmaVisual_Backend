@@ -1,5 +1,7 @@
 const { Op } = require('sequelize');
-const { Document, DocumentSigner, Signature, AuditLog, User, Role, ProjectMember } = require('../../shared/models');
+const fs = require('fs');
+const path = require('path');
+const { Document, DocumentSigner, Signature, AuditLog, User, Role, ProjectMember, UserRole } = require('../../shared/models');
 
 exports.uploadDocument = async (req, res) => {
   try {
@@ -19,28 +21,7 @@ exports.uploadDocument = async (req, res) => {
       createdBy: req.user.id
     });
 
-    // Auto-asignar firmantes del proyecto
-    const projectMembers = await ProjectMember.findAll({
-      where: { projectId: req.body.projectId },
-      include: [{ 
-        model: User, 
-        as: 'user', 
-        include: [{ model: Role, as: 'Role' }] 
-      }]
-    });
-
-    const firmantes = projectMembers.filter(m => m.user?.Role?.name === 'Firmante');
-    
-    if (firmantes.length > 0) {
-      await DocumentSigner.bulkCreate(
-        firmantes.map(f => ({
-          documentId: document.id,
-          userId: f.userId,
-          status: 'PENDING'
-        })),
-        { ignoreDuplicates: true }
-      );
-    }
+    // Auto-asignación eliminada - El administrador asignará manualmente
 
     await AuditLog.create({
       userId: req.user.id,
@@ -173,13 +154,21 @@ exports.getDocuments = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
+    const projectId = req.query.projectId;
+    const status = req.query.status;
     const offset = (page - 1) * limit;
 
     let whereClause = {};
 
-    // Filtros de búsqueda (por nombre de archivo)
+    // Filtros de búsqueda, proyecto y estado
     if (search) {
       whereClause.filename = { [Op.iLike]: `%${search}%` };
+    }
+    if (projectId) {
+      whereClause.projectId = projectId;
+    }
+    if (status && status !== 'ALL') {
+      whereClause.status = status;
     }
 
     // Filtros de seguridad (RBAC)
@@ -299,24 +288,30 @@ exports.assignSigners = async (req, res) => {
       return res.status(404).json({ message: 'Documento no encontrado' });
     }
 
-    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      return res.status(400).json({ message: 'Debe enviar al menos un userId' });
+    if (!userIds || !Array.isArray(userIds)) {
+      return res.status(400).json({ message: 'Debe enviar un array de userIds' });
     }
 
     // Eliminar asignaciones previas
     await DocumentSigner.destroy({ where: { documentId: id } });
 
-    // Crear nuevas asignaciones
+    // Crear nuevas asignaciones (ahora incluyen roleId)
     const signers = await DocumentSigner.bulkCreate(
-      userIds.map(userId => ({ documentId: id, userId, status: 'PENDING' }))
+      userIds.map(item => ({ 
+        documentId: id, 
+        userId: item.userId, 
+        roleId: item.roleId,
+        status: 'PENDING' 
+      }))
     );
 
-    // Reconciliar con firmas existentes
+    // Reconciliar con firmas existentes (por usuario y rol)
     const existingSignatures = await Signature.findAll({ where: { documentId: id } });
     const signedUserIds = existingSignatures.map(s => s.userId);
 
     for (const signer of signers) {
-      if (signedUserIds.includes(signer.userId)) {
+      const hasSigned = existingSignatures.some(s => s.userId === signer.userId && s.roleId === signer.roleId);
+      if (hasSigned) {
         signer.status = 'SIGNED';
         signer.signedAt = new Date();
         await signer.save();
@@ -324,10 +319,10 @@ exports.assignSigners = async (req, res) => {
     }
 
     // Recalcular status del documento
-    const pendingCount = signers.filter(s => !signedUserIds.includes(s.userId)).length;
+    const pendingCount = signers.filter(s => s.status === 'PENDING').length;
     if (existingSignatures.length > 0 && pendingCount > 0) {
       document.status = 'PARTIAL';
-    } else if (pendingCount === 0 && signers.length > 0 && existingSignatures.length > 0) {
+    } else if (pendingCount === 0 && signers.length > 0) {
       document.status = 'COMPLETED';
     }
     await document.save();
@@ -351,12 +346,67 @@ exports.assignSigners = async (req, res) => {
  */
 exports.getAvailableSigners = async (req, res) => {
   try {
-    const users = await User.findAll({
-      attributes: ['id', 'username', 'email', 'roleId'],
-      include: [{ model: Role, attributes: ['name'] }]
+    const userRoles = await UserRole.findAll({
+      include: [
+        { model: User, attributes: ['username', 'email'] },
+        { model: Role, attributes: ['name'] }
+      ]
     });
-    res.json(users);
+    res.json(userRoles);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
+  }
+};
+
+/**
+ * Eliminar documento y sus archivos físicos.
+ */
+exports.deleteDocument = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const document = await Document.findByPk(id);
+
+    if (!document) {
+      return res.status(404).json({ message: 'Documento no encontrado' });
+    }
+
+    // Verificar permisos: Admin o Creador
+    const isAdmin = req.user.role === 'Administrador';
+    if (!isAdmin && document.createdBy !== req.user.id) {
+      return res.status(403).json({ message: 'No tienes permiso para eliminar este documento' });
+    }
+
+    // 1. Eliminar archivos físicos
+    const filesToDelete = [document.originalPath, document.signedPath].filter(Boolean);
+    
+    for (const filePath of filesToDelete) {
+      try {
+        // La ruta puede ser absoluta o relativa a la raíz del proyecto
+        const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
+        if (fs.existsSync(absolutePath)) {
+          fs.unlinkSync(absolutePath);
+          console.log(`Archivo eliminado: ${absolutePath}`);
+        }
+      } catch (err) {
+        console.error(`Error al borrar archivo físico (${filePath}):`, err.message);
+      }
+    }
+
+    // 2. Eliminar de la base de datos (Firmas y Asignaciones primero si no hay cascada en DB)
+    await Signature.destroy({ where: { documentId: id } });
+    await DocumentSigner.destroy({ where: { documentId: id } });
+    await document.destroy();
+
+    await AuditLog.create({
+      userId: req.user.id,
+      action: 'DELETE_DOCUMENT',
+      details: `Documento "${document.filename}" eliminado permanentemente`,
+      ip: req.ip
+    });
+
+    res.json({ message: 'Documento eliminado correctamente' });
+  } catch (error) {
+    console.error('DELETE_DOCUMENT ERROR:', error);
+    res.status(500).json({ message: 'Error al eliminar documento', error: error.message });
   }
 };

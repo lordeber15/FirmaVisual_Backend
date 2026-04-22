@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Project, ProjectMember, Document, DocumentSigner, User, Role, AuditLog } = require('../../shared/models');
+const { Project, ProjectMember, Document, DocumentSigner, User, Role, AuditLog, UserRole } = require('../../shared/models');
 
 exports.createProject = async (req, res) => {
   try {
@@ -99,18 +99,6 @@ exports.getProjectById = async (req, res) => {
           model: ProjectMember,
           as: 'members',
           include: [{ model: User, as: 'user', attributes: ['id', 'username', 'email'] }]
-        },
-        {
-          model: Document,
-          as: 'documents',
-          include: [
-            {
-              model: DocumentSigner,
-              as: 'signers',
-              include: [{ model: User, as: 'user', attributes: ['id', 'username', 'email'] }]
-            },
-            { model: User, as: 'creator', attributes: ['id', 'username'] }
-          ]
         }
       ]
     });
@@ -194,7 +182,13 @@ exports.assignMembers = async (req, res) => {
     // Obtener roles de los usuarios para identificar Firmantes
     const usersWithRoles = await User.findAll({
       where: { id: { [Op.in]: uniqueIds } },
-      include: [{ model: Role, as: 'Role' }]
+      include: [
+        { 
+          model: UserRole, 
+          as: 'userRoles',
+          include: [{ model: Role, as: 'Role' }]
+        }
+      ]
     });
 
     // Crear nuevas asignaciones (evitar duplicar al creador)
@@ -206,27 +200,34 @@ exports.assignMembers = async (req, res) => {
     );
 
     // Auto-asignación de firmantes a documentos existentes
-    const firmanteIds = usersWithRoles
-      .filter(u => u.Role?.name === 'Firmante')
-      .map(u => u.id);
+    const signersToCreate = [];
+    for (const u of usersWithRoles) {
+      // Si el usuario tiene roles con cargos definidos o es tipo Firmante
+      if (u.userRoles && u.userRoles.length > 0) {
+        for (const ur of u.userRoles) {
+          signersToCreate.push({ userId: u.id, roleId: ur.roleId });
+        }
+      }
+    }
 
-    if (firmanteIds.length > 0) {
+    if (signersToCreate.length > 0) {
       const projectDocuments = await Document.findAll({
         where: { projectId: id, status: { [Op.ne]: 'COMPLETED' } }
       });
 
       if (projectDocuments.length > 0) {
-        const signersToCreate = [];
+        const docSigners = [];
         for (const doc of projectDocuments) {
-          for (const fId of firmanteIds) {
-            signersToCreate.push({
+          for (const s of signersToCreate) {
+            docSigners.push({
               documentId: doc.id,
-              userId: fId,
+              userId: s.userId,
+              roleId: s.roleId,
               status: 'PENDING'
             });
           }
         }
-        await DocumentSigner.bulkCreate(signersToCreate, { ignoreDuplicates: true });
+        await DocumentSigner.bulkCreate(docSigners, { ignoreDuplicates: true });
       }
     }
 
@@ -247,5 +248,36 @@ exports.assignMembers = async (req, res) => {
   } catch (error) {
     console.error('ASSIGN_MEMBERS ERROR:', error);
     res.status(500).json({ message: 'Error al asignar miembros', error: error.message });
+  }
+};
+/**
+ * Obtener usuarios disponibles para miembros de proyecto.
+ * Devuelve usuarios únicos con sus roles concatenados.
+ */
+exports.getAvailableMembers = async (req, res) => {
+  try {
+    const users = await User.findAll({
+      attributes: ['id', 'username', 'email'],
+      include: [
+        {
+          model: UserRole,
+          as: 'userRoles',
+          include: [{ model: Role, as: 'Role', attributes: ['name'] }]
+        }
+      ],
+      order: [['username', 'ASC']]
+    });
+
+    // Mapear para devolver una estructura más simple al frontend
+    const result = users.map(u => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      roles: (u.userRoles || []).map(ur => ur.Role?.name).filter(Boolean).join(', ')
+    }));
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
   }
 };

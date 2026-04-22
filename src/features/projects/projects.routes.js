@@ -10,5 +10,6 @@ router.get('/:id', auth, projectController.getProjectById);
 router.put('/:id', auth, checkRole(['Administrador', 'Ejecutor']), projectController.updateProject);
 router.delete('/:id', auth, checkRole(['Administrador']), projectController.deleteProject);
 router.post('/:id/members', auth, checkRole(['Administrador', 'Ejecutor']), projectController.assignMembers);
+router.get('/available-members/list', auth, projectController.getAvailableMembers);
 
 module.exports = router;

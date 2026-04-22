@@ -15,6 +15,10 @@ const Signature = sequelize.define('Signature', {
     type: DataTypes.UUID,
     allowNull: false
   },
+  roleId: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
   type: {
     type: DataTypes.ENUM('VISUAL', 'OFFICIAL'),
     allowNull: false

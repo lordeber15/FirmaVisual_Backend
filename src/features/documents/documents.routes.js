@@ -14,5 +14,6 @@ router.get('/:id', auth, documentIdRules, validate, docController.getDocumentByI
 router.put('/:id', auth, checkRole(['Administrador', 'Ejecutor']), upload.single('pdf'), docController.replaceDocument);
 router.post('/:id/signers', auth, checkRole(['Administrador', 'Ejecutor']), assignSignersRules, validate, docController.assignSigners);
 router.post('/:id/approve-replace', auth, checkRole(['Administrador']), documentIdRules, validate, docController.approveReplace);
+router.delete('/:id', auth, checkRole(['Administrador', 'Ejecutor']), documentIdRules, validate, docController.deleteDocument);
 
 module.exports = router;

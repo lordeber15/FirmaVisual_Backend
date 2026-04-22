@@ -25,6 +25,32 @@ function parsePageRange(rangeStr, totalPages) {
 }
 
 /**
+ * Divide un texto en múltiples líneas según un ancho máximo aproximado.
+ */
+function wrapText(text, size, maxWidth) {
+  if (!text) return [];
+  const words = text.split(' ').filter(Boolean);
+  if (words.length === 0) return [];
+  
+  const lines = [];
+  let currentLine = words[0];
+  const charWidth = size * 0.52; // Aproximación para Helvetica
+
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i];
+    const width = (currentLine + ' ' + word).length * charWidth;
+    if (width < maxWidth) {
+      currentLine += ' ' + word;
+    } else {
+      lines.push(currentLine);
+      currentLine = word;
+    }
+  }
+  lines.push(currentLine);
+  return lines;
+}
+
+/**
  * Convierte color hexadecimal a rgb de pdf-lib (0-1).
  */
 function hexToRgb(hex) {
@@ -186,9 +212,9 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     // --- Cálculo de posición del texto ---
     const hasImage = !!signatureImage;
     const effectiveAccentWidth = fields.accentBorder !== false ? accentWidth : 0;
-    const relTextX = effectiveAccentWidth + (hasImage ? (boxWidth * 0.35) + (8 * S) : paddingX);
+    const relTextX = effectiveAccentWidth + (hasImage ? (boxWidth * 0.28) + (8 * S) : paddingX);
     const textMaxWidth = hasImage
-      ? boxWidth - effectiveAccentWidth - (boxWidth * 0.35) - (8 * S) - paddingX
+      ? boxWidth - effectiveAccentWidth - (boxWidth * 0.28) - (8 * S) - paddingX
       : boxWidth - effectiveAccentWidth - (paddingX * 2);
 
     // Helper para truncar texto
@@ -210,7 +236,7 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
 
     // --- Imagen de firma (lado izquierdo del sello) ---
     if (signatureImage) {
-      const imgWidth = boxWidth * 0.30;
+      const imgWidth = boxWidth * 0.28;
       const imgHeight = boxHeight * 0.7;
       const imgPos = transform(accentWidth + (4 * S), (boxHeight - imgHeight) / 2);
       page.drawImage(signatureImage, {
@@ -224,36 +250,46 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     }
 
     // --- Campos de texto con guardia anti-superposición ---
-    // 1. Nombre
-    if (fields.name && (currentRelY - fs_name) > footerMinY) {
-      const pos = transform(relTextX, currentRelY);
-      page.drawText(truncateText(signatureData.name || 'N/A', fs_name), {
-        x: pos.px,
-        y: pos.py,
-        size: fs_name,
-        font: fontBold,
-        color: rgb(...TEXT_COLORS_RGB.name),
-        rotate: degrees(totalRotation),
-      });
-      currentRelY -= (fs_name + lineSpacing);
+    // 1. Nombre (multilínea)
+    if (fields.name && signatureData.name) {
+      const nameLines = wrapText(signatureData.name, fs_name, textMaxWidth);
+      for (const lineText of nameLines) {
+        if ((currentRelY - fs_name) > footerMinY) {
+          const pos = transform(relTextX, currentRelY);
+          page.drawText(lineText, {
+            x: pos.px,
+            y: pos.py,
+            size: fs_name,
+            font: fontBold,
+            color: rgb(...TEXT_COLORS_RGB.name),
+            rotate: degrees(totalRotation),
+          });
+          currentRelY -= (fs_name + lineSpacing);
+        }
+      }
     }
 
-    // 2. Cargo
-    if (fields.position && (currentRelY - fs_position) > footerMinY) {
-      const pos = transform(relTextX, currentRelY);
-      page.drawText(truncateText(signatureData.position || 'N/A', fs_position), {
-        x: pos.px,
-        y: pos.py,
-        size: fs_position,
-        font: fontBold,
-        color: rgb(...TEXT_COLORS_RGB.position),
-        rotate: degrees(totalRotation),
-      });
-      currentRelY -= (fs_position + lineSpacing);
+    // 2. Cargo (Soporte multilínea)
+    if (fields.position && signatureData.position) {
+      const positionLines = wrapText(signatureData.position, fs_position, textMaxWidth);
+      for (const lineText of positionLines) {
+        if ((currentRelY - fs_position) > (footerMinY - (5 * S))) { // Margen pequeño de cortesía
+          const pos = transform(relTextX, currentRelY);
+          page.drawText(lineText, {
+            x: pos.px,
+            y: pos.py,
+            size: fs_position,
+            font: fontBold,
+            color: rgb(...TEXT_COLORS_RGB.position),
+            rotate: degrees(totalRotation),
+          });
+          currentRelY -= (fs_position + lineSpacing);
+        }
+      }
     }
 
     // 3. Colegiatura
-    if (fields.colegiatura && signatureData.colegiatura && (currentRelY - fs_colegiatura) > footerMinY) {
+    if (fields.colegiatura && signatureData.colegiatura) {
       const pos = transform(relTextX, currentRelY);
       page.drawText(truncateText(signatureData.colegiatura, fs_colegiatura), {
         x: pos.px,
@@ -280,8 +316,6 @@ exports.stampVisualSignature = async (inputPath, outputPath, signatureData, coor
     }
 
     // --- Footer: 2 líneas apiladas (fecha arriba, hash abajo) ---
-    const relDividerY = relFooterBaseY + (fs_meta * footerLines) + (lineSpacing * footerLines);
-    drawRotatedLine({ x: relTextX, y: relDividerY }, { x: boxWidth - paddingX, y: relDividerY });
 
     // Línea 1: Fecha
     const dateText = truncateText(`${STAMP_TEXTS.FOOTER_DATE_PREFIX} ${signatureData.dateTime}`, fs_meta);

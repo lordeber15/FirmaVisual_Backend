@@ -1,15 +1,11 @@
 const { DataTypes } = require('sequelize');
 const sequelize = require('../../../shared/database');
 
-const DocumentSigner = sequelize.define('DocumentSigner', {
+const UserRole = sequelize.define('UserRole', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true
-  },
-  documentId: {
-    type: DataTypes.UUID,
-    allowNull: false
   },
   userId: {
     type: DataTypes.UUID,
@@ -17,23 +13,23 @@ const DocumentSigner = sequelize.define('DocumentSigner', {
   },
   roleId: {
     type: DataTypes.INTEGER,
+    allowNull: false
+  },
+  cargo: {
+    type: DataTypes.STRING,
     allowNull: true
   },
-  status: {
-    type: DataTypes.ENUM('PENDING', 'SIGNED'),
-    defaultValue: 'PENDING'
-  },
-  signedAt: {
-    type: DataTypes.DATE,
+  signatureSettings: {
+    type: DataTypes.JSON,
     allowNull: true
   }
 }, {
   indexes: [
     {
       unique: true,
-      fields: ['documentId', 'userId', 'roleId']
+      fields: ['userId', 'roleId', 'cargo']
     }
   ]
 });
 
-module.exports = DocumentSigner;
+module.exports = UserRole;
